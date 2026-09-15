@@ -1,67 +1,73 @@
+# discordia-ci/.github/workflows/python-service.yml
+#
+# Reusable workflow for the FastAPI services: identity, community, mod, monetization.
+# Mirrors the pipeline that went green in community (PR #2), parameterized.
+# It does not run on its own: each repo's ci.yml calls it with `uses:`.
+
 name: CI
- 
+
 on:
   workflow_call:
     inputs:
       python-version:
         type: string
         default: "3.12"
- 
+
       source-dir:
-        description: "Paquete sobre el que se mide cobertura"
+        description: "Package that coverage is measured on"
         type: string
         default: "app"
- 
+
       coverage-threshold:
-        description: "Piso de cobertura. El enunciado pide 70 en backend."
+        description: "Coverage floor. The assignment requires 70 on backend services."
         type: number
         default: 70
- 
+
       test-db-name:
-        description: "Nombre de la base de test. Tiene que coincidir con lo que espera el conftest."
+        description: "Test database name. Must match what the repo's conftest.py expects."
         type: string
         required: true
- 
+
       db-user:
         type: string
         default: "postgres"
- 
+
       db-password:
         type: string
         default: "postgres"
- 
+
       extra-env:
         description: |
-          Variables de entorno propias del servicio, una por línea (CLAVE=valor).
-          Ej: IDENTITY_SERVICE_URL=http://localhost:8001
+          Service-specific environment variables, one per line (KEY=value).
+          e.g. IDENTITY_SERVICE_URL=http://localhost:8001
         type: string
         default: ""
- 
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
- 
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python-version }}
           cache: pip
- 
-      - name: Instalar dependencias
+
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
- 
+
       - name: Ruff (lint)
         run: ruff check .
- 
-      - name: Ruff (formato)
+
+      - name: Ruff (format)
         run: ruff format --check .
- 
+
   test:
     runs-on: ubuntu-latest
- 
+
     services:
       postgres:
         image: postgres:16-alpine
@@ -76,43 +82,44 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
- 
+
     env:
       DATABASE_URL: postgresql+psycopg://${{ inputs.db-user }}:${{ inputs.db-password }}@localhost:5432/${{ inputs.test-db-name }}
- 
+
     steps:
       - uses: actions/checkout@v4
- 
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python-version }}
           cache: pip
- 
-      - name: Instalar dependencias
+
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
- 
-      - name: Variables de entorno del servicio
+
+      - name: Service environment variables
         if: inputs.extra-env != ''
         run: echo "${{ inputs.extra-env }}" >> "$GITHUB_ENV"
- 
-      - name: Tests + gate de cobertura
+
+      # The CI does not run migrations: tests create and drop their own tables.
+      - name: Tests + coverage gate
         run: |
           pytest tests/ \
             --cov=${{ inputs.source-dir }} \
             --cov-report=term-missing \
             --cov-report=xml \
             --cov-fail-under=${{ inputs.coverage-threshold }}
- 
-      - name: Subir reporte de cobertura
+
+      - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-${{ github.event.repository.name }}
           path: coverage.xml
           retention-days: 14
- 
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -124,7 +131,9 @@ jobs:
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
- 
+
+  # Lives here instead of a separate security.yml so the required status checks stay
+  # named `CI / gitleaks` and branch protection does not need reconfiguring.
   gitleaks:
     runs-on: ubuntu-latest
     steps:
@@ -132,11 +141,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Instalar gitleaks
+      # Do not use gitleaks/gitleaks-action@v2: it requires GITLEAKS_LICENSE on
+      # organization repos and fails in ~5s with an error that does not explain why.
+      - name: Install gitleaks
         run: |
           wget -qO- https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz | tar xz gitleaks
           sudo mv gitleaks /usr/local/bin/
- 
-      - name: Escanear historial
+
+      - name: Scan git history
         run: gitleaks detect --source . --verbose
- 
