@@ -1,0 +1,140 @@
+# Reusable workflow for the front-end apps: web-app, backoffice, mobile.
+#
+# The assignment requires the 70% coverage gate on backend services, not on the
+# front end, so the test job is opt-in: a repo turns it on once it has a test
+# setup. Lint and build run everywhere.
+#
+# It does not run on its own: each repo's ci.yml calls it with `uses:`.
+
+name: CI
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: "22"
+
+      run-tests:
+        description: "Turn on once the repo has a `test` script and a test runner."
+        type: boolean
+        default: false
+
+      coverage-threshold:
+        description: "Only used when run-tests is true."
+        type: number
+        default: 50
+
+      fail-on-coverage:
+        description: "Whether the coverage number gates the merge."
+        type: boolean
+        default: false
+
+      run-build:
+        description: "React Native repos may not have a web build."
+        type: boolean
+        default: true
+
+      docker-build:
+        description: "Only for repos that ship a container image."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+  build:
+    if: inputs.run-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `build` runs `tsc -b` before vite, so this covers type checking too.
+      # A repo whose build skips tsc needs a separate `tsc --noEmit` step.
+      - name: Build
+        run: npm run build
+
+  test:
+    if: inputs.run-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Tests with coverage
+        run: npm run test -- --coverage --coverage.thresholds.lines=${{ inputs.coverage-threshold }}
+        continue-on-error: ${{ !inputs.fail-on-coverage }}
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.event.repository.name }}
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  image:
+    if: inputs.docker-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: discordia/${{ github.event.repository.name }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Covers the assignment's second red line: a credential anywhere in the
+  # repository, including earlier commits, invalidates the evaluation.
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Do not use gitleaks/gitleaks-action@v2: it requires GITLEAKS_LICENSE on
+      # organization repos and fails in ~5s with an error that does not explain why.
+      - name: Install gitleaks
+        run: |
+          wget -qO- https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz | tar xz gitleaks
+          sudo mv gitleaks /usr/local/bin/
+
+      - name: Scan git history
+        run: gitleaks detect --source . --verbose
