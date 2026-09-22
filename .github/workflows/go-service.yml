@@ -3,7 +3,9 @@
 #
 # Every step goes through `make`, so CI and a developer's laptop run exactly the
 # same commands. The repo owns the tooling versions and the coverage logic; this
-# workflow owns the orchestration. Required targets: lint, cover, tidy, vuln, sast.
+# workflow owns the orchestration.
+#
+# Required targets: fmt-check, lint, build, cover, tidy, vuln, sast.
 #
 # It does not run on its own: each repo's ci.yml calls it with `uses:`.
 
@@ -27,6 +29,18 @@ on:
         description: "Run govulncheck and gosec. Turn off only with a documented reason."
         type: boolean
         default: true
+
+      needs-mongo:
+        description: |
+          Start a MongoDB service container for the test job. Turn it on when the
+          repo has integration tests that skip themselves without a real Mongo:
+          a test that silently skips in CI is a test that does not exist.
+        type: boolean
+        default: false
+
+      mongo-version:
+        type: string
+        default: "7"
 
       extra-env:
         description: "Service-specific environment variables, one per line (KEY=value)."
@@ -53,11 +67,29 @@ jobs:
           make tidy
           git diff --exit-code go.mod go.sum
 
+      # Separate from `lint` on purpose: a repo may run golangci-lint there, and
+      # not every golangci config enables the gofmt linter. This keeps formatting
+      # enforced without touching each repo's own lint target.
+      - name: Check formatting
+        run: make fmt-check
+
       - name: Lint
         run: make lint
 
   test:
     runs-on: ubuntu-latest
+
+    services:
+      mongo:
+        image: ${{ inputs.needs-mongo && format('mongo:{0}', inputs.mongo-version) || '' }}
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -76,7 +108,8 @@ jobs:
       # `make cover` runs the suite and fails below COVER_MIN. The repo's target
       # must serialise the package test binaries (-p 1): with -coverpkg and
       # packages in parallel the merged profile comes out incomplete and the
-      # total swings between runs on identical code.
+      # total swings between runs on identical code (72% and 89% observed
+      # alternating on the same commit).
       - name: Test with coverage gate
         run: make cover COVER_MIN=${{ inputs.coverage-threshold }}
 
