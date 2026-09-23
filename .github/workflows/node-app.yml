@@ -4,6 +4,9 @@
 # front end, so the test job is opt-in: a repo turns it on once it has a test
 # setup. Lint and build run everywhere.
 #
+# Supports npm workspaces: pass the workspace names and each job fans out over
+# them, so a failing check says which app broke without opening the log.
+#
 # It does not run on its own: each repo's ci.yml calls it with `uses:`.
 
 name: CI
@@ -14,6 +17,15 @@ on:
       node-version:
         type: string
         default: "22"
+
+      workspaces:
+        description: |
+          JSON array of npm workspace names, e.g. '["web-app", "mobile-app"]'.
+          Each job runs once per entry and the check reads `lint (web-app)`.
+          Leave the default for a single-project repo; the check then reads
+          `lint ()`, which is ugly but harmless.
+        type: string
+        default: '[""]'
 
       run-tests:
         description: "Turn on once the repo has a `test` script and a test runner."
@@ -31,7 +43,7 @@ on:
         default: false
 
       run-build:
-        description: "React Native repos may not have a web build."
+        description: "React Native workspaces have no web build; `--if-present` skips them."
         type: boolean
         default: true
 
@@ -46,6 +58,14 @@ permissions:
 jobs:
   lint:
     runs-on: ubuntu-latest
+
+    strategy:
+      # One app failing must not cancel the others: the point of fanning out is
+      # seeing every failure in one run.
+      fail-fast: false
+      matrix:
+        workspace: ${{ fromJSON(inputs.workspaces) }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -54,15 +74,25 @@ jobs:
           node-version: ${{ inputs.node-version }}
           cache: npm
 
+      # Installs every workspace from the root lockfile.
       - name: Install dependencies
         run: npm ci
 
+      # `--if-present` keeps a workspace without the script from failing the job.
+      # It also means a workspace that never had a `lint` script passes silently:
+      # check that each one actually defines it.
       - name: ESLint
-        run: npm run lint
+        run: npm run lint ${{ matrix.workspace != '' && format('--workspace={0}', matrix.workspace) || '' }} --if-present
 
   build:
     if: inputs.run-build
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: ${{ fromJSON(inputs.workspaces) }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -74,14 +104,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # `build` runs `tsc -b` before vite, so this covers type checking too.
-      # A repo whose build skips tsc needs a separate `tsc --noEmit` step.
+      # Where `build` runs `tsc -b` before Vite, this covers type checking too.
+      # A workspace whose build skips tsc needs its own `tsc --noEmit` script.
       - name: Build
-        run: npm run build
+        run: npm run build ${{ matrix.workspace != '' && format('--workspace={0}', matrix.workspace) || '' }} --if-present
 
   test:
     if: inputs.run-tests
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: ${{ fromJSON(inputs.workspaces) }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -94,14 +130,14 @@ jobs:
         run: npm ci
 
       - name: Tests with coverage
-        run: npm run test -- --coverage --coverage.thresholds.lines=${{ inputs.coverage-threshold }}
+        run: npm run test ${{ matrix.workspace != '' && format('--workspace={0}', matrix.workspace) || '' }} --if-present -- --coverage --coverage.thresholds.lines=${{ inputs.coverage-threshold }}
         continue-on-error: ${{ !inputs.fail-on-coverage }}
 
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-${{ github.event.repository.name }}
+          name: coverage-${{ github.event.repository.name }}-${{ matrix.workspace || 'root' }}
           path: coverage/
           if-no-files-found: ignore
           retention-days: 14
