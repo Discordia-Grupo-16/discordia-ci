@@ -5,6 +5,8 @@
 # same commands. The repo owns the tooling versions and the coverage logic; this
 # workflow owns the orchestration.
 #
+# Optional service containers: needs-mongo, needs-rabbitmq.
+#
 # Required targets: fmt-check, lint, build, cover, tidy, vuln, sast.
 #
 # It does not run on its own: each repo's ci.yml calls it with `uses:`.
@@ -41,6 +43,19 @@ on:
       mongo-version:
         type: string
         default: "7"
+
+      needs-rabbitmq:
+        description: |
+          Start a RabbitMQ service container for the test job (ADR-0003). Turn it
+          on when the repo has bus integration tests that skip themselves without
+          a real broker. Tests that start their own containers with testcontainers
+          do not need it.
+        type: boolean
+        default: false
+
+      rabbitmq-version:
+        type: string
+        default: "4-management"
 
       extra-env:
         description: "Service-specific environment variables, one per line (KEY=value)."
@@ -86,6 +101,15 @@ jobs:
           - 27017:27017
         options: >-
           --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      rabbitmq:
+        image: ${{ inputs.needs-rabbitmq && format('rabbitmq:{0}', inputs.rabbitmq-version) || '' }}
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_running"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
