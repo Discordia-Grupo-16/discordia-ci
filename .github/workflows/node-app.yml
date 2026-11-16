@@ -33,12 +33,15 @@ on:
         default: false
 
       coverage-threshold:
-        description: "Only used when run-tests is true."
+        description: "Only used when run-tests and fail-on-coverage are true."
         type: number
         default: 50
 
       fail-on-coverage:
-        description: "Whether the coverage number gates the merge."
+        description: |
+          Whether line coverage below coverage-threshold fails the job, in
+          every workspace (Vitest and Jest). Failing tests fail the job either
+          way.
         type: boolean
         default: false
 
@@ -129,9 +132,33 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # A failing test always fails the job. fail-on-coverage only decides
+      # whether the coverage threshold fails it too: it used to be the
+      # continue-on-error of this step, so a red test passed as green.
+      #
+      # The two runners take the threshold under different names, and each
+      # ignores the other's flag without a warning: a Vitest flag on a Jest
+      # workspace lets any coverage through. So the step reads the workspace's
+      # `test` script and passes the flag that runner understands.
       - name: Tests with coverage
-        run: npm run test ${{ matrix.workspace != '' && format('--workspace={0}', matrix.workspace) || '' }} --if-present -- --coverage --coverage.thresholds.lines=${{ inputs.coverage-threshold }}
-        continue-on-error: ${{ !inputs.fail-on-coverage }}
+        env:
+          WORKSPACE: ${{ matrix.workspace }}
+          GATE: ${{ inputs.fail-on-coverage }}
+          MIN: ${{ inputs.coverage-threshold }}
+        run: |
+          scope=()
+          if [ -n "$WORKSPACE" ]; then scope=(--workspace="$WORKSPACE"); fi
+
+          args=(--coverage)
+          if [ "$GATE" = "true" ]; then
+            if npm pkg get scripts.test "${scope[@]}" | grep -q '"jest'; then
+              args+=("--coverageThreshold={\"global\":{\"lines\":$MIN}}")
+            else
+              args+=("--coverage.thresholds.lines=$MIN")
+            fi
+          fi
+
+          npm run test "${scope[@]}" --if-present -- "${args[@]}"
 
       - name: Upload coverage report
         if: always()
