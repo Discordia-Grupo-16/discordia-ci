@@ -33,12 +33,14 @@ on:
         default: false
 
       coverage-threshold:
-        description: "Only used when run-tests is true."
+        description: "Only used when run-tests and fail-on-coverage are true."
         type: number
         default: 50
 
       fail-on-coverage:
-        description: "Whether the coverage number gates the merge."
+        description: |
+          Whether the coverage number gates the merge. Failing tests fail the
+          job either way; this only adds the coverage-threshold check.
         type: boolean
         default: false
 
@@ -129,9 +131,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Tests with coverage
+      # A failing test always fails the job. fail-on-coverage only decides
+      # whether the coverage number gates the merge: it used to be the
+      # continue-on-error of this same step, so a red test passed as green.
+      - name: Tests with coverage report
+        run: npm run test ${{ matrix.workspace != '' && format('--workspace={0}', matrix.workspace) || '' }} --if-present -- --coverage
+
+      # Runs the suite again with the threshold. The two runners take it
+      # differently (Vitest's --coverage.thresholds, Jest's coverageThreshold),
+      # so the runner itself checks it instead of this workflow parsing a
+      # report. It only runs when the repo asks for the gate.
+      - name: Coverage gate
+        if: inputs.fail-on-coverage
         run: npm run test ${{ matrix.workspace != '' && format('--workspace={0}', matrix.workspace) || '' }} --if-present -- --coverage --coverage.thresholds.lines=${{ inputs.coverage-threshold }}
-        continue-on-error: ${{ !inputs.fail-on-coverage }}
 
       - name: Upload coverage report
         if: always()
